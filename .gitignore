@@ -1,0 +1,61 @@
+# User-specific stuff
+.idea/
+
+*.iml
+*.ipr
+*.iws
+
+# IntelliJ
+out/
+.idea_modules/
+atlassian-ide-plugin.xml
+
+# Compiled and packaged files
+*.class
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# Logs and temporary files
+*.log
+*.ctxt
+hs_err_pid*
+*~
+.fuse_hidden*
+.directory
+.nfs*
+
+# OS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+Thumbs.db
+Thumbs.db:encryptable
+[Dd]esktop.ini
+
+# Windows installer and archive files
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Gradle and generated working directories
+.gradle/
+build/
+gradle-app.setting
+.gradletasknamecache
+**/build/
+run/
+runs/
+
+# Keep the Gradle wrapper executable jar
+!gradle-wrapper.jar
