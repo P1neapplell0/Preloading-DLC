@@ -249,6 +249,7 @@ class ForceDlcPreloaderTest {
             assertTrue(exception.getMessage().contains(
                     gameDir.resolve("mods/missing-mod.jar").toAbsolutePath().toString()));
             assertEquals(1, exception.failureCount());
+            assertEquals(required.resolve("missing.dc"), exception.primaryConfigPath());
         } finally {
             server.stop(0);
         }

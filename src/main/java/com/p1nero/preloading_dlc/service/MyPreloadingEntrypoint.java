@@ -1,5 +1,7 @@
 package com.p1nero.preloading_dlc.service;
 
+import net.neoforged.fml.ModLoadingException;
+import net.neoforged.fml.ModLoadingIssue;
 import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.fml.loading.ImmediateWindowHandler;
 import org.slf4j.Logger;
@@ -18,8 +20,17 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
                 ForceDlcPreloader.preload(gameDirectory(), modCandidates::add);
             } catch (ForceDlcPreloader.InstallException exception) {
                 LOGGER.error("{}", exception.getMessage());
-                ImmediateWindowHandler.crash(exception.getMessage());
-                throw new BootstrapAbortError(exception.getMessage(), exception);
+                try {
+                    ImmediateWindowHandler.crash(exception.getMessage());
+                } catch (RuntimeException | LinkageError earlyWindowFailure) {
+                    LOGGER.warn("Unable to show the early required-DLC error window; falling back to NeoForge.",
+                            earlyWindowFailure);
+                    exception.addSuppressed(earlyWindowFailure);
+                }
+                throw new ModLoadingException(ModLoadingIssue.error(
+                                "fml.modloadingissue.technical_error", exception.getMessage())
+                        .withAffectedPath(exception.primaryConfigPath())
+                        .withCause(exception));
             }
         });
     }
@@ -32,9 +43,4 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
         }
     }
 
-    private static final class BootstrapAbortError extends Error {
-        private BootstrapAbortError(String message, Throwable cause) {
-            super(message, cause);
-        }
-    }
 }

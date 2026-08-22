@@ -610,5 +610,9 @@ final class ForceDlcPreloader {
         int failureCount() {
             return failures.size();
         }
+
+        Path primaryConfigPath() {
+            return failures.getFirst().entry().configPath();
+        }
     }
 }
