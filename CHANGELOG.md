@@ -2,6 +2,17 @@
 
 All notable changes to Preloading DLC are documented here.
 
+## Unreleased
+
+### Added
+
+- A default-off `config/preloading_dlc.properties` debug option for simulating offline required-DLC downloads.
+
+### Changed
+
+- Required DLC failures are now shown only through NeoForge's Minecraft mod-loading error screen.
+- After a required DLC failure, all third-party mods are removed from the pending mod list before initialization so they cannot obscure the original error.
+
 ## 1.0.1
 
 ### Added

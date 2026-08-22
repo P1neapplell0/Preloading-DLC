@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
+import java.net.ConnectException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -29,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Properties;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.jar.JarFile;
@@ -38,6 +40,12 @@ import java.util.stream.Stream;
 final class ForceDlcPreloader {
     private static final Logger LOGGER = LoggerFactory.getLogger("Force DLC Loader");
     private static final String DEFAULT_DLC_ROOT = "config/dlc_manager";
+    private static final String DEBUG_CONFIG_PATH = "config/preloading_dlc.properties";
+    private static final String DEFAULT_DEBUG_CONFIG = """
+            # Preloading DLC debug settings
+            # Simulates an unavailable network for required DLC downloads. Default: false
+            debug.simulateOffline=false
+            """;
     private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration DEFAULT_TASK_TIMEOUT = Duration.ofSeconds(60);
     private static final int DEFAULT_MAX_RETRY_COUNT = 2;
@@ -48,7 +56,7 @@ final class ForceDlcPreloader {
     static void preload(Path gameDirectory, Consumer<Path> candidateConsumer) {
         Path gameDir = gameDirectory.toAbsolutePath().normalize();
         Path managerConfig = gameDir.resolve(DEFAULT_DLC_ROOT).resolve("config.dc");
-        ManagerSettings settings = readManagerSettings(gameDir, managerConfig);
+        ManagerSettings settings = readManagerSettings(gameDir, managerConfig, readSimulatedOffline(gameDir));
         Path requiredDir = settings.dlcRoot().resolve("required");
         if (Files.notExists(requiredDir.resolve("FORCE"))) {
             LOGGER.debug("DLC Manager FORCE marker is absent; skipping forced DLC preloading.");
@@ -284,6 +292,7 @@ final class ForceDlcPreloader {
 
     private static JsonElement getJson(HttpClient client, String url, ManagerSettings settings)
             throws IOException, InterruptedException {
+        ensureNetworkAvailable(settings);
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                 .timeout(settings.taskTimeout())
                 .header("User-Agent", "Force-DLC-Loader/1.1 (DLC-Manager compatibility)")
@@ -300,6 +309,7 @@ final class ForceDlcPreloader {
 
     private static void downloadUrl(String url, Path destination, ManagerSettings settings)
             throws IOException, InterruptedException {
+        ensureNetworkAvailable(settings);
         Files.createDirectories(destination.getParent());
         Path part = destination.resolveSibling(destination.getFileName() + ".part");
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
@@ -325,6 +335,12 @@ final class ForceDlcPreloader {
                 .connectTimeout(settings.connectTimeout())
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
+    }
+
+    private static void ensureNetworkAvailable(ManagerSettings settings) throws ConnectException {
+        if (settings.simulateOffline()) {
+            throw new ConnectException("Simulated offline mode is enabled in " + DEBUG_CONFIG_PATH);
+        }
     }
 
     private static List<RequiredDlc> readRequiredEntries(Path requiredDir) {
@@ -436,7 +452,7 @@ final class ForceDlcPreloader {
         return List.copyOf(entries.values());
     }
 
-    private static ManagerSettings readManagerSettings(Path gameDir, Path configPath) {
+    private static ManagerSettings readManagerSettings(Path gameDir, Path configPath, boolean simulateOffline) {
         String dlcRoot = DEFAULT_DLC_ROOT;
         int connectTimeout = (int) DEFAULT_CONNECT_TIMEOUT.toSeconds();
         int taskTimeout = (int) DEFAULT_TASK_TIMEOUT.toSeconds();
@@ -457,7 +473,30 @@ final class ForceDlcPreloader {
             root = gameDir.resolve(root);
         }
         return new ManagerSettings(root.normalize(), Duration.ofSeconds(Math.max(1, connectTimeout)),
-                Duration.ofSeconds(Math.max(1, taskTimeout)), Math.max(1, maxRetryCount));
+                Duration.ofSeconds(Math.max(1, taskTimeout)), Math.max(1, maxRetryCount), simulateOffline);
+    }
+
+    private static boolean readSimulatedOffline(Path gameDir) {
+        Path configPath = gameDir.resolve(DEBUG_CONFIG_PATH);
+        try {
+            Files.createDirectories(configPath.getParent());
+            if (Files.notExists(configPath)) {
+                Files.writeString(configPath, DEFAULT_DEBUG_CONFIG, StandardCharsets.UTF_8);
+            }
+
+            Properties properties = new Properties();
+            try (var reader = Files.newBufferedReader(configPath, StandardCharsets.UTF_8)) {
+                properties.load(reader);
+            }
+            boolean enabled = Boolean.parseBoolean(properties.getProperty("debug.simulateOffline", "false"));
+            if (enabled) {
+                LOGGER.warn("Required DLC offline simulation is enabled by {}.", configPath);
+            }
+            return enabled;
+        } catch (IOException | RuntimeException exception) {
+            LOGGER.warn("Unable to read or create {}; offline simulation remains disabled.", configPath, exception);
+            return false;
+        }
     }
 
     private static Path resolveAppliedTarget(Path gameDir, String target) {
@@ -578,7 +617,8 @@ final class ForceDlcPreloader {
         return value == null || value.isJsonNull() ? null : value.getAsString();
     }
 
-    private record ManagerSettings(Path dlcRoot, Duration connectTimeout, Duration taskTimeout, int maxRetryCount) {
+    private record ManagerSettings(Path dlcRoot, Duration connectTimeout, Duration taskTimeout, int maxRetryCount,
+                                   boolean simulateOffline) {
     }
 
     private record RequiredDlc(Path configPath, String identifier, String fileName, List<String> appliedTargets,

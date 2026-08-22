@@ -75,6 +75,8 @@ class ForceDlcPreloaderTest {
 
         assertFalse(Files.exists(gameDir.resolve("mods")));
         assertEquals(List.of(), candidates);
+        assertTrue(Files.readString(gameDir.resolve("config/preloading_dlc.properties"))
+                .contains("debug.simulateOffline=false"));
     }
 
     @Test
@@ -250,6 +252,46 @@ class ForceDlcPreloaderTest {
                     gameDir.resolve("mods/missing-mod.jar").toAbsolutePath().toString()));
             assertEquals(1, exception.failureCount());
             assertEquals(required.resolve("missing.dc"), exception.primaryConfigPath());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void debugConfigCanSimulateOfflineWithoutMakingARequest() throws Exception {
+        byte[] modJar = modJar();
+        Files.createDirectories(gameDir.resolve("config"));
+        Files.writeString(gameDir.resolve("config/preloading_dlc.properties"),
+                "debug.simulateOffline=true\n");
+        AtomicInteger requests = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/online.jar", exchange -> {
+            requests.incrementAndGet();
+            exchange.sendResponseHeaders(200, modJar.length);
+            exchange.getResponseBody().write(modJar);
+            exchange.close();
+        });
+        server.start();
+        try {
+            Path required = gameDir.resolve("config/dlc_manager/required");
+            Files.createDirectories(required);
+            Files.createFile(required.resolve("FORCE"));
+            Files.writeString(required.resolve("offline.dc"), """
+                    [download]
+                    directUrl = ["http://127.0.0.1:%d/online.jar"]
+                    priority = ["directUrl"]
+
+                    [basic]
+                    identifier = "offline_test"
+                    file_name = "offline-test.jar"
+                    appliedTarget = "mods"
+                    """.formatted(server.getAddress().getPort()));
+
+            ForceDlcPreloader.InstallException exception = assertThrows(ForceDlcPreloader.InstallException.class,
+                    () -> ForceDlcPreloader.preload(gameDir, ignored -> { }));
+
+            assertEquals(0, requests.get());
+            assertTrue(exception.getMessage().contains("Simulated offline mode is enabled"));
         } finally {
             server.stop(0);
         }

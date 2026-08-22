@@ -48,3 +48,13 @@ Players normally do not need to configure this mod. The required content, downlo
 - Download time depends on the configured source and the player's connection.
 - Closing the forced-DLC error does not bypass the requirement. All listed files must be installed before the game can continue.
 - When manual installation is required, follow the exact paths shown in the dialog or log.
+
+## Offline Test Mode
+
+For troubleshooting, Preloading DLC creates `config/preloading_dlc.properties` with offline simulation disabled:
+
+```properties
+debug.simulateOffline=false
+```
+
+Set the value to `true` to make required DLC network requests fail immediately as if the computer were offline. Existing cached DLC files are still used, so remove the cached file for the DLC you want to test. Restore the value to `false` after testing.

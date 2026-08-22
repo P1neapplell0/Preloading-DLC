@@ -60,7 +60,7 @@ dependencies {
 
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
-    testRuntimeOnly "maven.modrinth:preloading-tricks:${preloading_tricks_version}"
+    testImplementation "maven.modrinth:preloading-tricks:${preloading_tricks_version}"
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testRuntimeOnly 'com.electronwill.night-config:core:3.8.3'
     testRuntimeOnly 'com.electronwill.night-config:toml:3.8.3'
