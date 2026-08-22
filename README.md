@@ -45,7 +45,14 @@ Players normally do not need to configure this mod. The required content, downlo
 ## Important Notes
 
 - An internet connection may be required when a required DLC is not already installed.
-- Download time depends on the configured source and the player's connection.
+- Download time depends on the configured source and the player's connection. Required DLC preloading has a total wait limit of 300 seconds by default.
+- You can change this limit in `config/preloading_dlc.properties`:
+
+```properties
+download.maxWaitSeconds=300
+```
+
+When the limit is exceeded, the download is treated as a network failure and the standard NeoForge error screen lists the files to download manually.
 - Closing the forced-DLC error does not bypass the requirement. All listed files must be installed before the game can continue.
 - When manual installation is required, follow the exact paths shown in the dialog or log.
 
@@ -54,6 +61,7 @@ Players normally do not need to configure this mod. The required content, downlo
 For troubleshooting, Preloading DLC creates `config/preloading_dlc.properties` with offline simulation disabled:
 
 ```properties
+download.maxWaitSeconds=300
 debug.simulateOffline=false
 ```
 

@@ -2,7 +2,17 @@
 
 All notable changes to Preloading DLC are documented here.
 
-## Unreleased
+## 1.0.2
+
+### Added
+
+- A configurable maximum total wait time for required DLC checks and downloads (`download.maxWaitSeconds`, default `300`).
+- Required DLC download progress logs approximately once per second, including downloaded and total size when available.
+- Clear timeout reporting when the configured wait limit is exceeded; the failure is shown in NeoForge's standard Minecraft error screen for manual installation.
+
+### Changed
+
+- Required DLC network requests and retries now honor the total wait limit in addition to DLC Manager's per-request timeout.
 
 ### Added
 

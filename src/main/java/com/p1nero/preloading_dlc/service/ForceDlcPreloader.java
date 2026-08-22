@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
@@ -44,6 +45,8 @@ final class ForceDlcPreloader {
     private static final String DEFAULT_DEBUG_CONFIG = """
             # Preloading DLC debug settings
             # Simulates an unavailable network for required DLC downloads. Default: false
+            # Maximum total wait time for all required DLC checks and downloads, in seconds.
+            download.maxWaitSeconds=300
             debug.simulateOffline=false
             """;
     private static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(5);
@@ -56,7 +59,9 @@ final class ForceDlcPreloader {
     static void preload(Path gameDirectory, Consumer<Path> candidateConsumer) {
         Path gameDir = gameDirectory.toAbsolutePath().normalize();
         Path managerConfig = gameDir.resolve(DEFAULT_DLC_ROOT).resolve("config.dc");
-        ManagerSettings settings = readManagerSettings(gameDir, managerConfig, readSimulatedOffline(gameDir));
+        DebugSettings debugSettings = readDebugSettings(gameDir);
+        ManagerSettings settings = readManagerSettings(gameDir, managerConfig, debugSettings);
+        settings = settings.withDeadline(System.nanoTime() + settings.maxWait().toNanos());
         Path requiredDir = settings.dlcRoot().resolve("required");
         if (Files.notExists(requiredDir.resolve("FORCE"))) {
             LOGGER.debug("DLC Manager FORCE marker is absent; skipping forced DLC preloading.");
@@ -71,6 +76,7 @@ final class ForceDlcPreloader {
                 continue;
             }
             try {
+                settings.ensureWithinDeadline();
                 preloadEntry(gameDir, requiredDir, entry, settings, modCandidates);
             } catch (Exception exception) {
                 failures.add(new InstallFailure(entry, exception));
@@ -139,9 +145,12 @@ final class ForceDlcPreloader {
                     LOGGER.info(
                             "Downloading forced DLC '{}' from {} (attempt {}/{}).",
                             entry.identifier(), url, attempt, settings.maxRetryCount());
-                    downloadUrl(url, destination, settings);
+                    downloadUrl(url, destination, settings, entry.identifier());
                     return;
                 } catch (IOException exception) {
+                    if (exception instanceof DownloadDeadlineExceededException) {
+                        throw exception;
+                    }
                     failure = exception;
                     LOGGER.warn(
                             "Download source failed for forced DLC '{}' on attempt {}/{}: {} ({})",
@@ -202,6 +211,9 @@ final class ForceDlcPreloader {
                             "Ignoring unknown DLC download source '{}' for '{}'.", source, entry.identifier());
                 }
             } catch (IOException exception) {
+                if (exception instanceof DownloadDeadlineExceededException) {
+                    throw exception;
+                }
                 LOGGER.warn("Unable to resolve {} source for forced DLC '{}'; trying the next source. ({})",
                         source, entry.identifier(), rootCauseSummary(exception));
             }
@@ -294,7 +306,7 @@ final class ForceDlcPreloader {
             throws IOException, InterruptedException {
         ensureNetworkAvailable(settings);
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                .timeout(settings.taskTimeout())
+                .timeout(settings.requestTimeout())
                 .header("User-Agent", "Force-DLC-Loader/1.1 (DLC-Manager compatibility)")
                 .GET().build();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
@@ -307,13 +319,14 @@ final class ForceDlcPreloader {
         return JsonParser.parseString(response.body());
     }
 
-    private static void downloadUrl(String url, Path destination, ManagerSettings settings)
+    private static void downloadUrl(String url, Path destination, ManagerSettings settings, String identifier)
             throws IOException, InterruptedException {
         ensureNetworkAvailable(settings);
+        settings.ensureWithinDeadline();
         Files.createDirectories(destination.getParent());
         Path part = destination.resolveSibling(destination.getFileName() + ".part");
         HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                .timeout(settings.taskTimeout())
+                .timeout(settings.requestTimeout())
                 .header("User-Agent", "DLC-Manager")
                 .GET().build();
         HttpResponse<InputStream> response = httpClient(settings).send(request, HttpResponse.BodyHandlers.ofInputStream());
@@ -322,12 +335,42 @@ final class ForceDlcPreloader {
             throw new IOException("HTTP " + response.statusCode());
         }
         try (InputStream input = response.body()) {
-            Files.copy(input, part, StandardCopyOption.REPLACE_EXISTING);
+            long total = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+            long downloaded = 0;
+            long nextProgress = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            try (var output = Files.newOutputStream(part)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = input.read(buffer)) != -1) {
+                    settings.ensureWithinDeadline();
+                    output.write(buffer, 0, read);
+                    downloaded += read;
+                    if (System.nanoTime() >= nextProgress) {
+                        logDownloadProgress(identifier, downloaded, total);
+                        nextProgress = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+                    }
+                }
+            }
+            logDownloadProgress(identifier, downloaded, total);
             moveAtomically(part, destination);
         } catch (IOException exception) {
             Files.deleteIfExists(part);
             throw exception;
         }
+    }
+
+    private static void logDownloadProgress(String identifier, long downloaded, long total) {
+        if (total > 0) {
+            LOGGER.info("Downloading forced DLC '{}': {} / {} ({}%)", identifier,
+                    formatBytes(downloaded), formatBytes(total), Math.min(100, downloaded * 100 / total));
+        } else {
+            LOGGER.info("Downloading forced DLC '{}': {}", identifier, formatBytes(downloaded));
+        }
+    }
+
+    private static String formatBytes(long bytes) {
+        if (bytes < 1024 * 1024) return String.format(Locale.ROOT, "%.1f KiB", bytes / 1024.0);
+        return String.format(Locale.ROOT, "%.1f MiB", bytes / (1024.0 * 1024.0));
     }
 
     private static HttpClient httpClient(ManagerSettings settings) {
@@ -452,7 +495,7 @@ final class ForceDlcPreloader {
         return List.copyOf(entries.values());
     }
 
-    private static ManagerSettings readManagerSettings(Path gameDir, Path configPath, boolean simulateOffline) {
+    private static ManagerSettings readManagerSettings(Path gameDir, Path configPath, DebugSettings debugSettings) {
         String dlcRoot = DEFAULT_DLC_ROOT;
         int connectTimeout = (int) DEFAULT_CONNECT_TIMEOUT.toSeconds();
         int taskTimeout = (int) DEFAULT_TASK_TIMEOUT.toSeconds();
@@ -473,10 +516,11 @@ final class ForceDlcPreloader {
             root = gameDir.resolve(root);
         }
         return new ManagerSettings(root.normalize(), Duration.ofSeconds(Math.max(1, connectTimeout)),
-                Duration.ofSeconds(Math.max(1, taskTimeout)), Math.max(1, maxRetryCount), simulateOffline);
+                Duration.ofSeconds(Math.max(1, taskTimeout)), Math.max(1, maxRetryCount),
+                Duration.ofSeconds(Math.max(1, debugSettings.maxWaitSeconds())), debugSettings.simulateOffline(), 0);
     }
 
-    private static boolean readSimulatedOffline(Path gameDir) {
+    private static DebugSettings readDebugSettings(Path gameDir) {
         Path configPath = gameDir.resolve(DEBUG_CONFIG_PATH);
         try {
             Files.createDirectories(configPath.getParent());
@@ -489,14 +533,19 @@ final class ForceDlcPreloader {
                 properties.load(reader);
             }
             boolean enabled = Boolean.parseBoolean(properties.getProperty("debug.simulateOffline", "false"));
+            int maxWait = parsePositiveInt(properties.getProperty("download.maxWaitSeconds"), 300);
             if (enabled) {
                 LOGGER.warn("Required DLC offline simulation is enabled by {}.", configPath);
             }
-            return enabled;
+            return new DebugSettings(enabled, maxWait);
         } catch (IOException | RuntimeException exception) {
             LOGGER.warn("Unable to read or create {}; offline simulation remains disabled.", configPath, exception);
-            return false;
+            return new DebugSettings(false, 300);
         }
+    }
+
+    private static int parsePositiveInt(String value, int fallback) {
+        try { return Math.max(1, Integer.parseInt(value)); } catch (RuntimeException ignored) { return fallback; }
     }
 
     private static Path resolveAppliedTarget(Path gameDir, String target) {
@@ -618,7 +667,24 @@ final class ForceDlcPreloader {
     }
 
     private record ManagerSettings(Path dlcRoot, Duration connectTimeout, Duration taskTimeout, int maxRetryCount,
-                                   boolean simulateOffline) {
+                                   Duration maxWait, boolean simulateOffline, long deadlineNanos) {
+        ManagerSettings withDeadline(long deadline) { return new ManagerSettings(dlcRoot, connectTimeout, taskTimeout,
+                maxRetryCount, maxWait, simulateOffline, deadline); }
+        void ensureWithinDeadline() throws DownloadDeadlineExceededException {
+            if (System.nanoTime() >= deadlineNanos) throw new DownloadDeadlineExceededException(
+                    "Required DLC download wait limit exceeded (" + maxWait.toSeconds() + " seconds)");
+        }
+        Duration requestTimeout() throws DownloadDeadlineExceededException {
+            ensureWithinDeadline();
+            long remaining = deadlineNanos - System.nanoTime();
+            return Duration.ofNanos(Math.max(1, Math.min(remaining, taskTimeout.toNanos())));
+        }
+    }
+
+    private record DebugSettings(boolean simulateOffline, int maxWaitSeconds) { }
+
+    private static final class DownloadDeadlineExceededException extends IOException {
+        DownloadDeadlineExceededException(String message) { super(message); }
     }
 
     private record RequiredDlc(Path configPath, String identifier, String fileName, List<String> appliedTargets,

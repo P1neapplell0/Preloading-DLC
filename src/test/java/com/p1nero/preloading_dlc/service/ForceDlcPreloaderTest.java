@@ -76,6 +76,8 @@ class ForceDlcPreloaderTest {
         assertFalse(Files.exists(gameDir.resolve("mods")));
         assertEquals(List.of(), candidates);
         assertTrue(Files.readString(gameDir.resolve("config/preloading_dlc.properties"))
+                .contains("download.maxWaitSeconds=300"));
+        assertTrue(Files.readString(gameDir.resolve("config/preloading_dlc.properties"))
                 .contains("debug.simulateOffline=false"));
     }
 
