@@ -10,6 +10,7 @@ All notable changes to Preloading DLC are documented here.
 - Downloaded mod candidates are added back on the original discovery thread after background work completes.
 - Required DLC failures are now registered with NeoForge's global loading issue list so the client reaches the standard Minecraft mod-loading error screen instead of only logging a discovery error.
 - Early-window download progress uses a compact DLC name and fixed-width layout so long identifiers cannot hide the percentage or speed.
+- Download timeout detection now measures inactivity between received data chunks, so slow but progressing downloads are not incorrectly terminated.
 
 ## 1.0.3
 

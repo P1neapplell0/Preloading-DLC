@@ -45,14 +45,14 @@ Players normally do not need to configure this mod. The required content, downlo
 ## Important Notes
 
 - An internet connection may be required when a required DLC is not already installed.
-- Download time depends on the configured source and the player's connection. Required DLC preloading has a total wait limit of 300 seconds by default.
+- Download time depends on the configured source and the player's connection. Required DLC checks have a 300-second default setup/wait limit, while an active download is allowed to continue at any speed as long as new data keeps arriving.
 - You can change this limit in `config/preloading_dlc.properties`:
 
 ```properties
 download.maxWaitSeconds=300
 ```
 
-When the limit is exceeded, the download is treated as a network failure and the standard NeoForge error screen lists the files to download manually.
+If a connection or download makes no progress for the configured DLC Manager task timeout, it is treated as a network failure and the standard NeoForge error screen lists the files to download manually. A slow but continuously progressing download is not terminated by the total wait limit.
 While a required DLC is downloading, NeoForge's early Minecraft loading window shows its progress, percentage, and current transfer speed. The same information is written to the log approximately once per second.
 - Closing the forced-DLC error does not bypass the requirement. All listed files must be installed before the game can continue.
 - When manual installation is required, follow the exact paths shown in the dialog or log.

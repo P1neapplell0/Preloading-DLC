@@ -218,16 +218,14 @@ class ForceDlcPreloaderTest {
     }
 
     @Test
-    void totalWaitLimitTurnsStalledResponseBodyIntoInstallFailure() throws Exception {
+    void stalledConnectionTurnsIntoInstallFailure() throws Exception {
         byte[] modJar = modJar();
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/stalled.jar", exchange -> {
-            exchange.sendResponseHeaders(200, modJar.length);
-            exchange.getResponseBody().write(modJar, 0, 1);
-            exchange.getResponseBody().flush();
             try {
                 Thread.sleep(2_000);
-                exchange.getResponseBody().write(modJar, 1, modJar.length - 1);
+                exchange.sendResponseHeaders(200, modJar.length);
+                exchange.getResponseBody().write(modJar);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
             } catch (IOException ignored) {
@@ -240,6 +238,10 @@ class ForceDlcPreloaderTest {
             Path required = gameDir.resolve("config/dlc_manager/required");
             Files.createDirectories(required);
             Files.createFile(required.resolve("FORCE"));
+            Files.writeString(gameDir.resolve("config/dlc_manager/config.dc"), """
+                    [downloads]
+                    taskTimeoutSeconds = 1
+                    """);
             Files.writeString(gameDir.resolve("config/preloading_dlc.properties"),
                     "download.maxWaitSeconds=1\ndebug.simulateOffline=false\n");
             Files.writeString(required.resolve("stalled.dc"), """
@@ -256,7 +258,7 @@ class ForceDlcPreloaderTest {
             ForceDlcPreloader.InstallException exception = assertThrows(ForceDlcPreloader.InstallException.class,
                     () -> ForceDlcPreloader.preload(gameDir, ignored -> { }));
 
-            assertTrue(exception.getMessage().contains("Required DLC download wait limit exceeded"));
+            assertEquals(1, exception.failureCount());
             assertFalse(Files.exists(required.resolve("stalled-mod.jar")));
             assertFalse(Files.exists(required.resolve("stalled-mod.jar.part")));
         } finally {
