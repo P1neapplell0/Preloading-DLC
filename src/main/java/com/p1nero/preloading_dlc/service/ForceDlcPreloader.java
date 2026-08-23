@@ -39,6 +39,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
+import java.util.zip.ZipException;
+import java.util.zip.ZipFile;
 
 /** Early-start compatibility bridge for DLC Manager's required DLC file format. */
 final class ForceDlcPreloader {
@@ -366,6 +368,10 @@ final class ForceDlcPreloader {
                 }
                 throw exception;
             }
+            if (total >= 0 && downloaded != total) {
+                throw new IOException("Incomplete download: received " + downloaded + " of " + total + " bytes");
+            }
+            validateArchive(part);
             long now = System.nanoTime();
             reportDownloadProgress(identifier, downloaded, total,
                     bytesPerSecond(downloaded - lastDownloaded, now - lastProgress));
@@ -380,6 +386,18 @@ final class ForceDlcPreloader {
 
     private static int toTimeoutMillis(Duration duration) {
         return (int) Math.min(Integer.MAX_VALUE, Math.max(1, duration.toMillis()));
+    }
+
+    private static void validateArchive(Path path) throws IOException {
+        String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        if (!name.endsWith(".jar") && !name.endsWith(".zip")) {
+            return;
+        }
+        try (ZipFile ignored = new ZipFile(path.toFile())) {
+            // Opening the central directory detects truncated or otherwise incomplete archives.
+        } catch (ZipException exception) {
+            throw new IOException("Downloaded archive is incomplete or corrupted: " + path.getFileName(), exception);
+        }
     }
 
     private static void reportDownloadProgress(String identifier, long downloaded, long total,

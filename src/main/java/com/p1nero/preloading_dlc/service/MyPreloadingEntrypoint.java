@@ -19,9 +19,15 @@ import java.util.concurrent.locks.LockSupport;
 
 public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
     private static final Logger LOGGER = LoggerFactory.getLogger("Force DLC Loader");
+    private static volatile ModLoadingIssue pendingFailure;
 
     public MyPreloadingEntrypoint() {
         PreloadingTricksCallbacks.SETUP_MODS.register(modManager -> {
+            if (StartupModBlocker.isBlocked() && pendingFailure != null) {
+                // Some NeoForge builds rebuild the loading issue list between discovery
+                // and setup; register again at the last pre-launch hook.
+                ModLoader.addLoadingIssue(pendingFailure);
+            }
             int removed = StartupModBlocker.removeThirdPartyMods(modManager);
             if (removed > 0) {
                 LOGGER.error("Removed {} third-party mod file(s) after required DLC installation failed.", removed);
@@ -29,6 +35,7 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
         });
         PreloadingTricksCallbacks.COLLECT_MOD_CANDIDATES.register(modCandidates -> {
             StartupModBlocker.beginStartupCheck();
+            pendingFailure = null;
             List<Path> downloadedCandidates;
             FutureTask<List<Path>> preloadTask = new FutureTask<>(() -> {
                 List<Path> candidates = new ArrayList<>();
@@ -91,6 +98,7 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
                             "fml.modloadingissue.technical_error", message)
                     .withCause(cause);
         }
+        pendingFailure = issue;
         // Register globally so ClientModLoader throws it during its normal begin phase,
         // where NeoForge creates the standard LoadingErrorScreen.
         ModLoader.addLoadingIssue(issue);
