@@ -53,6 +53,7 @@ download.maxWaitSeconds=300
 ```
 
 When the limit is exceeded, the download is treated as a network failure and the standard NeoForge error screen lists the files to download manually.
+While a required DLC is downloading, NeoForge's early Minecraft loading window shows its progress, percentage, and current transfer speed. The same information is written to the log approximately once per second.
 - Closing the forced-DLC error does not bypass the requirement. All listed files must be installed before the game can continue.
 - When manual installation is required, follow the exact paths shown in the dialog or log.
 

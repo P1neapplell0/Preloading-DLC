@@ -2,6 +2,18 @@
 
 All notable changes to Preloading DLC are documented here.
 
+## 1.0.3
+
+### Added
+
+- Required DLC download progress, percentage, and current transfer speed in NeoForge's early Minecraft loading window.
+- A response-body watchdog so stalled downloads reliably honor the configured wait limit.
+
+### Fixed
+
+- Download timeouts are consistently converted into NeoForge mod-loading issues instead of escaping as an early startup crash.
+- Unexpected required-DLC startup failures are also routed to NeoForge's standard error screen.
+
 ## 1.0.2
 
 ### Added

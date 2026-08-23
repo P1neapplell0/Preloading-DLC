@@ -31,6 +31,13 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
                                 "fml.modloadingissue.technical_error", exception.getMessage())
                         .withAffectedPath(exception.primaryConfigPath())
                         .withCause(exception));
+            } catch (RuntimeException exception) {
+                StartupModBlocker.blockStartup();
+                String message = "Required DLC startup check failed unexpectedly: " + exception;
+                LOGGER.error(message, exception);
+                throw new ModLoadingException(ModLoadingIssue.error(
+                                "fml.modloadingissue.technical_error", message)
+                        .withCause(exception));
             }
         });
     }

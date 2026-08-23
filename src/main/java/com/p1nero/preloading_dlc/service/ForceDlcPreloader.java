@@ -9,6 +9,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import net.neoforged.fml.loading.ImmediateWindowHandler;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,6 +34,9 @@ import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
@@ -69,6 +73,7 @@ final class ForceDlcPreloader {
         }
 
         List<RequiredDlc> entries = expandDependencies(readRequiredEntries(requiredDir), requiredDir);
+        updateStartupWindow("Checking required DLC");
         List<Path> modCandidates = new ArrayList<>();
         List<InstallFailure> failures = new ArrayList<>();
         for (RequiredDlc entry : entries) {
@@ -91,6 +96,7 @@ final class ForceDlcPreloader {
         if (!modCandidates.isEmpty()) {
             LOGGER.info("Added {} forced DLC mod(s) to this launch.", modCandidates.size());
         }
+        updateStartupWindow("Discovering mod files");
     }
 
     private static void preloadEntry(Path gameDir, Path requiredDir, RequiredDlc entry,
@@ -337,7 +343,23 @@ final class ForceDlcPreloader {
         try (InputStream input = response.body()) {
             long total = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
             long downloaded = 0;
-            long nextProgress = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            long lastProgress = System.nanoTime();
+            long lastDownloaded = 0;
+            long nextProgress = lastProgress + TimeUnit.SECONDS.toNanos(1);
+            Duration bodyTimeout = settings.requestTimeout();
+            AtomicBoolean timeoutTriggered = new AtomicBoolean();
+            ScheduledExecutorService timeoutExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "required-dlc-download-timeout");
+                thread.setDaemon(true);
+                return thread;
+            });
+            timeoutExecutor.schedule(() -> {
+                timeoutTriggered.set(true);
+                try {
+                    input.close();
+                } catch (IOException ignored) {
+                }
+            }, bodyTimeout.toNanos(), TimeUnit.NANOSECONDS);
             try (var output = Files.newOutputStream(part)) {
                 byte[] buffer = new byte[8192];
                 int read;
@@ -345,13 +367,33 @@ final class ForceDlcPreloader {
                     settings.ensureWithinDeadline();
                     output.write(buffer, 0, read);
                     downloaded += read;
-                    if (System.nanoTime() >= nextProgress) {
-                        logDownloadProgress(identifier, downloaded, total);
-                        nextProgress = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+                    long now = System.nanoTime();
+                    if (now >= nextProgress) {
+                        double bytesPerSecond = bytesPerSecond(downloaded - lastDownloaded, now - lastProgress);
+                        reportDownloadProgress(identifier, downloaded, total, bytesPerSecond);
+                        lastProgress = now;
+                        lastDownloaded = downloaded;
+                        nextProgress = now + TimeUnit.SECONDS.toNanos(1);
                     }
                 }
+                if (timeoutTriggered.get()) {
+                    settings.ensureWithinDeadline();
+                    throw new IOException("Required DLC download request timed out after "
+                            + bodyTimeout.toSeconds() + " seconds");
+                }
+            } catch (IOException exception) {
+                if (timeoutTriggered.get()) {
+                    settings.ensureWithinDeadline();
+                    throw new IOException("Required DLC download request timed out after "
+                            + bodyTimeout.toSeconds() + " seconds", exception);
+                }
+                throw exception;
+            } finally {
+                timeoutExecutor.shutdownNow();
             }
-            logDownloadProgress(identifier, downloaded, total);
+            long now = System.nanoTime();
+            reportDownloadProgress(identifier, downloaded, total,
+                    bytesPerSecond(downloaded - lastDownloaded, now - lastProgress));
             moveAtomically(part, destination);
         } catch (IOException exception) {
             Files.deleteIfExists(part);
@@ -359,12 +401,30 @@ final class ForceDlcPreloader {
         }
     }
 
-    private static void logDownloadProgress(String identifier, long downloaded, long total) {
+    private static void reportDownloadProgress(String identifier, long downloaded, long total,
+                                               double bytesPerSecond) {
+        String progress;
         if (total > 0) {
-            LOGGER.info("Downloading forced DLC '{}': {} / {} ({}%)", identifier,
-                    formatBytes(downloaded), formatBytes(total), Math.min(100, downloaded * 100 / total));
+            progress = String.format(Locale.ROOT, "Downloading DLC %s: %s / %s (%d%%) at %s/s", identifier,
+                    formatBytes(downloaded), formatBytes(total), Math.min(100, downloaded * 100 / total),
+                    formatBytes((long) bytesPerSecond));
         } else {
-            LOGGER.info("Downloading forced DLC '{}': {}", identifier, formatBytes(downloaded));
+            progress = String.format(Locale.ROOT, "Downloading DLC %s: %s at %s/s", identifier,
+                    formatBytes(downloaded), formatBytes((long) bytesPerSecond));
+        }
+        LOGGER.info("{}", progress);
+        updateStartupWindow(progress);
+    }
+
+    private static double bytesPerSecond(long bytes, long elapsedNanos) {
+        return elapsedNanos <= 0 ? 0 : bytes * 1_000_000_000.0 / elapsedNanos;
+    }
+
+    private static void updateStartupWindow(String message) {
+        try {
+            ImmediateWindowHandler.updateProgress(message);
+        } catch (RuntimeException | LinkageError exception) {
+            LOGGER.debug("NeoForge early loading window is not available for progress updates.", exception);
         }
     }
 

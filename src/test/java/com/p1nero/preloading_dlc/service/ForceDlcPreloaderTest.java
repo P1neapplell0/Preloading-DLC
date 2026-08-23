@@ -6,6 +6,7 @@ import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -211,6 +212,53 @@ class ForceDlcPreloaderTest {
 
             assertEquals(2, requests.get());
             assertEquals(List.of(gameDir.resolve("mods/retry-mod.jar").toAbsolutePath()), candidates);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void totalWaitLimitTurnsStalledResponseBodyIntoInstallFailure() throws Exception {
+        byte[] modJar = modJar();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/stalled.jar", exchange -> {
+            exchange.sendResponseHeaders(200, modJar.length);
+            exchange.getResponseBody().write(modJar, 0, 1);
+            exchange.getResponseBody().flush();
+            try {
+                Thread.sleep(2_000);
+                exchange.getResponseBody().write(modJar, 1, modJar.length - 1);
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } catch (IOException ignored) {
+            } finally {
+                exchange.close();
+            }
+        });
+        server.start();
+        try {
+            Path required = gameDir.resolve("config/dlc_manager/required");
+            Files.createDirectories(required);
+            Files.createFile(required.resolve("FORCE"));
+            Files.writeString(gameDir.resolve("config/preloading_dlc.properties"),
+                    "download.maxWaitSeconds=1\ndebug.simulateOffline=false\n");
+            Files.writeString(required.resolve("stalled.dc"), """
+                    [download]
+                    directUrl = ["http://127.0.0.1:%d/stalled.jar"]
+                    priority = ["directUrl"]
+
+                    [basic]
+                    identifier = "stalled_mod"
+                    file_name = "stalled-mod.jar"
+                    appliedTarget = "mods"
+                    """.formatted(server.getAddress().getPort()));
+
+            ForceDlcPreloader.InstallException exception = assertThrows(ForceDlcPreloader.InstallException.class,
+                    () -> ForceDlcPreloader.preload(gameDir, ignored -> { }));
+
+            assertTrue(exception.getMessage().contains("Required DLC download wait limit exceeded"));
+            assertFalse(Files.exists(required.resolve("stalled-mod.jar")));
+            assertFalse(Files.exists(required.resolve("stalled-mod.jar.part")));
         } finally {
             server.stop(0);
         }
