@@ -2,6 +2,13 @@
 
 All notable changes to Preloading DLC are documented here.
 
+## 1.0.4
+
+### Fixed
+
+- Required DLC downloads now run off the mod-discovery thread while the loading thread continues to process NeoForge's early-window events, preventing the Minecraft window from becoming unresponsive during long downloads.
+- Downloaded mod candidates are added back on the original discovery thread after background work completes.
+
 ## 1.0.3
 
 ### Added
