@@ -105,10 +105,18 @@ final class ForceDlcPreloader {
         boolean installsMod = entry.appliedTargets().stream()
                 .map(target -> resolveAppliedTarget(gameDir, target))
                 .anyMatch(target -> isModsTarget(gameDir, target));
-        if (Files.exists(cachedFile) && installsMod && inspectModJar(cachedFile) == ModJarType.INVALID) {
-            LOGGER.warn("Discarding invalid cached mod DLC '{}': {}",
-                    entry.identifier(), cachedFile);
-            Files.delete(cachedFile);
+        if (Files.exists(cachedFile)) {
+            boolean invalidArchive = false;
+            try {
+                validateArchive(cachedFile);
+            } catch (IOException exception) {
+                invalidArchive = true;
+            }
+            boolean invalidMod = installsMod && inspectModJar(cachedFile) == ModJarType.INVALID;
+            if (invalidArchive || invalidMod) {
+                LOGGER.warn("Discarding invalid cached DLC '{}': {}", entry.identifier(), cachedFile);
+                Files.delete(cachedFile);
+            }
         }
         if (Files.notExists(cachedFile)) {
             download(entry, cachedFile, settings);
