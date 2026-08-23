@@ -2,6 +2,7 @@ package com.p1nero.preloading_dlc.service;
 
 import net.neoforged.fml.ModLoadingIssue;
 import net.neoforged.fml.ModLoader;
+import net.neoforged.fml.ModLoadingException;
 import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.fml.loading.FMLLoader;
 import org.slf4j.Logger;
@@ -44,23 +45,19 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
             try {
                 downloadedCandidates = preloadTask.get();
             } catch (ForceDlcPreloader.InstallException exception) {
-                recordLoadingFailure(exception);
-                return;
+                throw recordLoadingFailure(exception);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                recordLoadingFailure(exception);
-                return;
+                throw recordLoadingFailure(exception);
             } catch (ExecutionException exception) {
                 Throwable cause = exception.getCause() == null ? exception : exception.getCause();
                 if (cause instanceof ForceDlcPreloader.InstallException installException) {
-                    recordLoadingFailure(installException);
+                    throw recordLoadingFailure(installException);
                 } else {
-                    recordLoadingFailure(cause);
+                    throw recordLoadingFailure(cause);
                 }
-                return;
             } catch (RuntimeException exception) {
-                recordLoadingFailure(exception);
-                return;
+                throw recordLoadingFailure(exception);
             }
             downloadedCandidates.forEach(modCandidates::add);
         });
@@ -78,7 +75,7 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
         }
     }
 
-    private static void recordLoadingFailure(Throwable cause) {
+    private static ModLoadingException recordLoadingFailure(Throwable cause) {
         StartupModBlocker.blockStartup();
         ModLoadingIssue issue;
         if (cause instanceof ForceDlcPreloader.InstallException exception) {
@@ -97,6 +94,9 @@ public class MyPreloadingEntrypoint implements PreloadingEntrypoint {
         // Register globally so ClientModLoader throws it during its normal begin phase,
         // where NeoForge creates the standard LoadingErrorScreen.
         ModLoader.addLoadingIssue(issue);
+        // Also return it to ModDiscoverer so the issue remains in LoadingModList if
+        // a loader version does not consult ModLoader's global issue list early enough.
+        return new ModLoadingException(issue);
     }
 
     private static Path gameDirectory() {

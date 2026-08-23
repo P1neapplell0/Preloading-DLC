@@ -16,6 +16,8 @@ import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.ConnectException;
+import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -34,11 +36,6 @@ import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.jar.JarFile;
 import java.util.stream.Stream;
@@ -331,57 +328,28 @@ final class ForceDlcPreloader {
         ensureNetworkAvailable(settings);
         Files.createDirectories(destination.getParent());
         Path part = destination.resolveSibling(destination.getFileName() + ".part");
-        HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                .timeout(settings.taskTimeout())
-                .header("User-Agent", "DLC-Manager")
-                .GET().build();
-        HttpResponse<InputStream> response = httpClient(settings).send(request, HttpResponse.BodyHandlers.ofInputStream());
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            response.body().close();
-            throw new IOException("HTTP " + response.statusCode());
-        }
-        try (InputStream input = response.body()) {
-            long total = response.headers().firstValueAsLong("Content-Length").orElse(-1L);
+        HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
+        connection.setInstanceFollowRedirects(true);
+        connection.setConnectTimeout(toTimeoutMillis(settings.connectTimeout()));
+        // HttpURLConnection read timeout is inactivity-based: every successful read resets it.
+        connection.setReadTimeout(toTimeoutMillis(settings.taskTimeout()));
+        connection.setRequestProperty("User-Agent", "DLC-Manager");
+        try {
+            int status = connection.getResponseCode();
+            if (status < 200 || status >= 300) {
+                throw new IOException("HTTP " + status + " from " + url);
+            }
+            long total = connection.getContentLengthLong();
             long downloaded = 0;
             long lastProgress = System.nanoTime();
             long lastDownloaded = 0;
             long nextProgress = lastProgress + TimeUnit.SECONDS.toNanos(1);
-            Duration bodyTimeout = settings.taskTimeout();
-            AtomicBoolean timeoutTriggered = new AtomicBoolean();
-            AtomicReference<ScheduledFuture<?>> timeoutFuture = new AtomicReference<>();
-            ScheduledExecutorService timeoutExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "required-dlc-download-timeout");
-                thread.setDaemon(true);
-                return thread;
-            });
-            Runnable timeoutAction = () -> {
-                timeoutTriggered.set(true);
-                try {
-                    input.close();
-                } catch (IOException ignored) {
-                }
-            };
-            var scheduleTimeout = (java.util.function.Consumer<Duration>) timeout -> {
-                ScheduledFuture<?> previous = timeoutFuture.getAndSet(timeoutExecutor.schedule(
-                        timeoutAction, timeout.toNanos(), TimeUnit.NANOSECONDS));
-                if (previous != null) {
-                    previous.cancel(false);
-                }
-            };
-            scheduleTimeout.accept(bodyTimeout);
-            try (var output = Files.newOutputStream(part)) {
+            try (InputStream input = connection.getInputStream(); var output = Files.newOutputStream(part)) {
                 byte[] buffer = new byte[8192];
                 int read;
                 while ((read = input.read(buffer)) != -1) {
-                    if (timeoutTriggered.get()) {
-                        throw stalledDownloadException(settings.taskTimeout());
-                    }
-                    timeoutTriggered.set(false);
                     output.write(buffer, 0, read);
                     downloaded += read;
-                    // A slow transfer is valid as long as bytes keep arriving. The watchdog
-                    // measures inactivity, not average throughput or total transfer duration.
-                    scheduleTimeout.accept(settings.taskTimeout());
                     long now = System.nanoTime();
                     if (now >= nextProgress) {
                         double bytesPerSecond = bytesPerSecond(downloaded - lastDownloaded, now - lastProgress);
@@ -391,16 +359,12 @@ final class ForceDlcPreloader {
                         nextProgress = now + TimeUnit.SECONDS.toNanos(1);
                     }
                 }
-                if (timeoutTriggered.get()) {
-                    throw stalledDownloadException(settings.taskTimeout());
-                }
             } catch (IOException exception) {
-                if (timeoutTriggered.get()) {
-                    throw stalledDownloadException(settings.taskTimeout(), exception);
+                if (exception instanceof SocketTimeoutException) {
+                    throw new IOException("Download stalled: no data received for "
+                            + settings.taskTimeout().toSeconds() + " seconds", exception);
                 }
                 throw exception;
-            } finally {
-                timeoutExecutor.shutdownNow();
             }
             long now = System.nanoTime();
             reportDownloadProgress(identifier, downloaded, total,
@@ -409,15 +373,13 @@ final class ForceDlcPreloader {
         } catch (IOException exception) {
             Files.deleteIfExists(part);
             throw exception;
+        } finally {
+            connection.disconnect();
         }
     }
 
-    private static IOException stalledDownloadException(Duration timeout) {
-        return new IOException("Required DLC download stalled for " + timeout.toSeconds() + " seconds");
-    }
-
-    private static IOException stalledDownloadException(Duration timeout, IOException cause) {
-        return new IOException("Required DLC download stalled for " + timeout.toSeconds() + " seconds", cause);
+    private static int toTimeoutMillis(Duration duration) {
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(1, duration.toMillis()));
     }
 
     private static void reportDownloadProgress(String identifier, long downloaded, long total,
@@ -428,14 +390,14 @@ final class ForceDlcPreloader {
             progress = String.format(Locale.ROOT, "Downloading DLC %s: %s / %s (%d%%) at %s/s", identifier,
                     formatBytes(downloaded), formatBytes(total), Math.min(100, downloaded * 100 / total),
                     formatBytes((long) bytesPerSecond));
-            windowProgress = String.format(Locale.ROOT, "DLC %s %s/%s %3d%% %s/s", shortIdentifier(identifier),
-                    formatBytes(downloaded), formatBytes(total), Math.min(100, downloaded * 100 / total),
+            windowProgress = String.format(Locale.ROOT, "DLC %s %3d%% %s/s", shortIdentifier(identifier),
+                    Math.min(100, downloaded * 100 / total),
                     formatBytes((long) bytesPerSecond));
         } else {
             progress = String.format(Locale.ROOT, "Downloading DLC %s: %s at %s/s", identifier,
                     formatBytes(downloaded), formatBytes((long) bytesPerSecond));
-            windowProgress = String.format(Locale.ROOT, "DLC %s %s %s/s", shortIdentifier(identifier),
-                    formatBytes(downloaded), formatBytes((long) bytesPerSecond));
+            windowProgress = String.format(Locale.ROOT, "DLC %s %s/s", shortIdentifier(identifier),
+                    formatBytes((long) bytesPerSecond));
         }
         LOGGER.info("{}", progress);
         updateStartupWindow(windowProgress);
