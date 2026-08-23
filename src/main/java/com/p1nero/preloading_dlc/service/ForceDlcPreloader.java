@@ -404,16 +404,30 @@ final class ForceDlcPreloader {
     private static void reportDownloadProgress(String identifier, long downloaded, long total,
                                                double bytesPerSecond) {
         String progress;
+        String windowProgress;
         if (total > 0) {
             progress = String.format(Locale.ROOT, "Downloading DLC %s: %s / %s (%d%%) at %s/s", identifier,
+                    formatBytes(downloaded), formatBytes(total), Math.min(100, downloaded * 100 / total),
+                    formatBytes((long) bytesPerSecond));
+            windowProgress = String.format(Locale.ROOT, "DLC %s %s/%s %3d%% %s/s", shortIdentifier(identifier),
                     formatBytes(downloaded), formatBytes(total), Math.min(100, downloaded * 100 / total),
                     formatBytes((long) bytesPerSecond));
         } else {
             progress = String.format(Locale.ROOT, "Downloading DLC %s: %s at %s/s", identifier,
                     formatBytes(downloaded), formatBytes((long) bytesPerSecond));
+            windowProgress = String.format(Locale.ROOT, "DLC %s %s %s/s", shortIdentifier(identifier),
+                    formatBytes(downloaded), formatBytes((long) bytesPerSecond));
         }
         LOGGER.info("{}", progress);
-        updateStartupWindow(progress);
+        updateStartupWindow(windowProgress);
+    }
+
+    private static String shortIdentifier(String identifier) {
+        final int maxLength = 18;
+        if (identifier.length() <= maxLength) {
+            return identifier;
+        }
+        return identifier.substring(0, 8) + "..." + identifier.substring(identifier.length() - 7);
     }
 
     private static double bytesPerSecond(long bytes, long elapsedNanos) {
